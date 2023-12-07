@@ -2,30 +2,53 @@
 ! update: 04/18/2016
 
       module hdf5io_class
+      
 
       use perrors_class
+!! Quick QuickPIC to QPAD conversion note (08)
+!! 
+!! replaces parallel_pipe_class and perrors_class with parallel module, and 
+!! the pp variable is no longer necessary (as parallel is no longer a data type)
+!!
+!! apply the following substitutions:
+!!
+!!    pp%getlgrp() --> comm_loc()
+!!    pp%getlnvp() --> num_procs_loc()
+!!    pp%getkstrt() --> id_proc()
+!!    pp%getmint() --> p_dtype_int
+!!    pp%getlworld() --> comm_world()
+!!    pp%getnvp() --> num_procs()
+!!
+
       use parallel_pipe_class
+      ! use sysutil_module
       use HDF5
       use mpi
+      ! use param
          
       implicit none
+
+!     CONSTANT
+      integer, parameter :: LG = selected_int_kind(12)
       
       private
       
       public :: hdf5file, pwfield, pwfield_pipe, wfield_pipe, pwpart_pipe, pwpart,&
-      &wpart,rpart
+      &wpart,rpart 
+      
+      public :: detect_precision
       
       type hdf5file
          
          private
          
-         character(len=100) :: filename = 'file.h5', timeunits = 'a.u.',&
+         character(len=100) :: filename = 'file.h5', timeunit = 'a.u.',&
          &dataname = 'Data', units = 'a.u.', label = 'Data'
-         character(len=100) :: ty = 'grid',openpmd = '1.0.0', &
+         character(len=100) :: ty = 'grid',openpmd = '1.1.0', &
          & basepath='/data/%T/',filenamebase = 'data', records='Ex',&
          & dataorder = 'F', software='QuickPIC',base = 'data',&
          & meshespath = 'fields/', particlespath = 'particles/', &
-         & iterationencoding = 'fileBased', iterationformat = 'data%T.h5',&
+         & iterationencoding = 'fileBased', iterationformat = 'filename_%T.h5',&
          & filepath ='./'
 
          integer :: n = 1, rank = 2
@@ -40,7 +63,7 @@
          ! ------------------   OpenPMD attributes   ------------------------
          ! ------------------------------------------------------------------
          ! -----------------------------------------------------------------
-         integer :: openpmdextension = 0
+         integer :: openpmdextension = 1
          integer :: iter = 0
          character(len=8) :: chiter = '00000000'
          real :: unitsi = 1.0, timeunitsi = 1.0, gridunitsi=1.0
@@ -51,7 +74,7 @@
          generic :: new => init_hdf5file
          procedure, private :: init_hdf5file
          
-      end type 
+      end type hdf5file
 
       interface add_h5_atribute
          module procedure add_h5_atribute_str
@@ -76,17 +99,21 @@
         module procedure wfield_2d_pipe
       end interface      
 
+!
+! new QPAD pwpart_3d uses x,p,q and maybe spin, in QuickPIC the particle array is stored in a single array called part
       interface pwpart_pipe
         module procedure pwpart_3d_pipe
       end interface
+!
 
       interface pwpart
         module procedure pwpart_2d
+        module procedure pwpart_2d_r
       end interface
       
       contains
 
-      subroutine init_hdf5file(this,filename,timeunits,ty,n,t,dt,axisname,&
+      subroutine init_hdf5file(this,filename,timeunit,ty,n,t,dt,axisname,&
       & axislabel,axisunits,axismax,axismin,dataname,units,label,rank, &
       & openpmd,openpmdextension,iter,base,records,basepath,meshespath, &
       & particlespath,filenamebase,timeunitsi,iterationencoding, &
@@ -95,7 +122,7 @@
          implicit none
          
          class(hdf5file), intent(inout) :: this
-         character(len=*), intent(in), optional :: filename, timeunits
+         character(len=*), intent(in), optional :: filename, timeunit
          character(len=*), intent(in), optional :: ty, dataname, units, label
          integer, intent(in), optional :: n
          integer, optional :: rank
@@ -126,13 +153,13 @@
 
           
          ! DEBUG
-         ! write(*,*) 'in init_hdf5file ',trim(this%filename),'  ',trim(this%timeunits)
+         ! write(*,*) 'in init_hdf5file ',trim(this%filename),'  ',trim(this%timeunit)
          ! write(*,*) 'this%records = ', trim(this%records)
          ! write(*,*) 'this%filenamebase = ', trim(this%filenamebase)
          ! write(*,*) 'this%base = ', trim(this%base)
          ! DEBUG
 
-         if(.not. present(rank)) this%rank=3
+         if(.not. present(rank)) this%rank=2
          
          if (present(filename)) then
             this%filename = filename
@@ -150,8 +177,8 @@
             this%label = label
          end if
 
-         if (present(timeunits)) then
-            this%timeunits = timeunits
+         if (present(timeunit)) then
+            this%timeunit = timeunit
          end if
 
          if (present(ty)) then
@@ -205,7 +232,8 @@
              this%iter = iter
          end if
 
-         write(chiter,'(I8.8)') this%iter
+         !write(chiter,'(I8.8)') this%iter
+         write(chiter,'(I8.1)') this%iter
          chiter = trim(chiter)
          this%chiter = chiter
          
@@ -247,7 +275,7 @@
           
          integer(hid_t) :: dataspaceID, typeID, attrID
          integer(hsize_t), dimension(1) :: dims
-         integer(size_t) :: size
+         integer(size_t) :: maxlen
           
          integer :: ierr
           
@@ -256,8 +284,8 @@
          ! call h5tcopy_f(H5T_FORTRAN_S1, typeID, ierr)
          call h5tcopy_f(H5T_NATIVE_CHARACTER, typeID, ierr)
           
-         size = len(attribute)
-         call h5tset_size_f(typeID, size, ierr)
+         maxlen = len(attribute)
+         call h5tset_size_f(typeID, maxlen, ierr)
           
          call h5acreate_f( objID, name, typeID, dataspaceID, attrID, ierr )
          call h5awrite_f( attrID, typeID, attribute, dims, ierr)
@@ -458,7 +486,7 @@
           call add_h5_atribute(rootID, 'TIME', this%t)
           call add_h5_atribute(rootID, 'ITER', this%n) 
           call add_h5_atribute(rootID, 'DT', this%dt)
-          call add_h5_atribute(rootID, 'TIME UNITS', trim(this%timeunits) )
+          call add_h5_atribute(rootID, 'TIME UNITS', trim(this%timeunit) )
 ! OpenPMD attributes
           call add_h5_atribute(rootID, 'openPMD', trim(this%openpmd) )
           call add_h5_atribute(rootID, 'openPMDextension',this%openpmdextension)
@@ -472,29 +500,29 @@
           call add_h5_atribute(rootID, 'software',trim(this%software))
           call add_h5_atribute(rootID,'iterationFormat','data%T.h5')
 ! OpenPMD attributes     
-          if (this%ty == 'grid') then
-             call h5gcreate_f(rootID, 'AXIS', aid, ierr) 
-
-             dims(1) = 2 
-             call h5screate_simple_f(1, dims, dspace_id, ierr ) 
-             do i = 1, this%rank
-                call h5dcreate_f(aid, 'AXIS'//char(zero+i), treal, dspace_id,&
-                &dset_id, ierr )
-
-                call add_h5_atribute(dset_id, 'TYPE', 'linear') 
-                call add_h5_atribute(dset_id, 'UNITS', trim(this%axisunits(i))) 
-                call add_h5_atribute(dset_id, 'NAME', trim(this%axisname(i))) 
-                call add_h5_atribute(dset_id, 'LONG_NAME', trim(this%axislabel(i))) 
-
-                call h5dwrite_f(dset_id, treal, (/this%axismin(i),this%axismax(i)/),&
-                &dims, ierr, xfer_prp=xferID)
-
-                call h5dclose_f(dset_id, ierr)
-             enddo
-    
-             call h5sclose_f(dspace_id, ierr) 
-             call h5gclose_f(aid, ierr) 
-          endif
+!         if (this%ty == 'grid') then
+!            call h5gcreate_f(rootID, 'AXIS', aid, ierr) 
+!
+!            dims(1) = 2 
+!            call h5screate_simple_f(1, dims, dspace_id, ierr ) 
+!            do i = 1, this%rank
+!               call h5dcreate_f(aid, 'AXIS'//char(zero+i), treal, dspace_id,&
+!               &dset_id, ierr )
+!
+!               call add_h5_atribute(dset_id, 'TYPE', 'linear') 
+!               call add_h5_atribute(dset_id, 'UNITS', trim(this%axisunits(i))) 
+!               call add_h5_atribute(dset_id, 'NAME', trim(this%axisname(i))) 
+!               call add_h5_atribute(dset_id, 'LONG_NAME', trim(this%axislabel(i))) 
+!
+!               call h5dwrite_f(dset_id, treal, (/this%axismin(i),this%axismax(i)/),&
+!               &dims, ierr, xfer_prp=xferID)
+!
+!               call h5dclose_f(dset_id, ierr)
+!            enddo
+!   
+!            call h5sclose_f(dspace_id, ierr) 
+!            call h5gclose_f(aid, ierr) 
+!         endif
              call h5gclose_f(rootID, ierr)
 
       end subroutine wrattr_file
@@ -510,17 +538,17 @@
          ! real(8) :: gridtoSI = 1.0
          
 
-         if (present(unit)) then
-            call add_h5_atribute(dset_id, 'UNITS', unit)
-         else
-            call add_h5_atribute(dset_id, 'UNITS', this%units)
-         endif 
+         ! if (present(unit)) then
+            ! call add_h5_atribute(dset_id, 'UNITS', unit)
+         ! else
+            ! call add_h5_atribute(dset_id, 'UNITS', this%units)
+         ! endif 
           
-         if (present(name)) then
-            call add_h5_atribute(dset_id, 'LONG_NAME', name) 
-         else
-            call add_h5_atribute(dset_id, 'LONG_NAME', this%label) 
-         endif 
+         ! if (present(name)) then
+            ! call add_h5_atribute(dset_id, 'LONG_NAME', name) 
+         ! else
+            ! call add_h5_atribute(dset_id, 'LONG_NAME', this%label) 
+         ! endif 
 ! OPENPMD
          call add_h5_atribute(dset_id,'dataOrder','F')
          call add_h5_atribute(dset_id,'geometry','cartesian')
@@ -530,7 +558,7 @@
          call add_h5_atribute(dset_id,'unitSI',1.0)
          call add_h5_atribute(dset_id,'time',this%t)
          call add_h5_atribute(dset_id,'axisLabels',this%axisname(1:this%rank))
-         call add_h5_atribute(dset_id,'unitDimension',[ 0., 1., -2., -1., 0., 0., 0.])
+         call add_h5_atribute(dset_id,'unitDimension',[ 1., 0., 1., 1., 0., 0., 0.])
 ! OPENPMD
   
       end subroutine wrattr_dataset
@@ -540,8 +568,9 @@
 
          implicit none
         
-         class(perrors), intent(in), pointer :: perr
          class(parallel_pipe), intent(in), pointer :: pp
+         class(perrors), intent(in), pointer :: perr
+         ! class(parallel_pipe), intent(in), pointer :: pp
          class(hdf5file), intent(in) :: file
          real, dimension(:,:,:), intent(in) :: fd
          integer, dimension(3), intent(in) :: gs, ls
@@ -619,7 +648,8 @@
          if(ierr .ne. 0) then
              write(*,*) 'error open data'
          end if
-         write(iter_str,'(I0.8)') file%n
+         ! write(iter_str,'(I0.8)') file%n
+         write(iter_str,'(I8)') file%n
          call h5gcreate_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
          if(ierr .ne. 0) then
              write(*,*) 'error open iter'
@@ -671,12 +701,13 @@
                
       end subroutine pwfield_3d
 !
-      subroutine pwfield_2d(pp,perr,file,fd,gs,ls,noff,ierr)
+      subroutine pwfield_2d(pp,perr, file,fd,gs,ls,noff,ierr)
 
          implicit none
         
-         class(perrors), intent(in), pointer :: perr
          class(parallel_pipe), intent(in), pointer :: pp
+         class(perrors), intent(in), pointer :: perr
+         ! class(parallel_pipe), intent(in), pointer :: pp
          class(hdf5file), intent(in) :: file
          real, dimension(:,:), intent(in) :: fd
          integer, dimension(2), intent(in) :: gs, ls
@@ -728,7 +759,8 @@
          call h5gopen_f(file_id, '/', rootID, ierr)
          ! write(*,*) '(pwfield_2d) open data'
          call h5gcreate_f(rootID,'data',dataID,ierr)
-         write(iter_str,'(I0.8)') file%n
+         ! write(iter_str,'(I0.8)') file%n
+         write(iter_str,'(I8)') file%n
          ! write(*,*) '(pwfield_2d) open iter  --- ',iter_str
          call h5gcreate_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
          ! here we need to write dt, time, and also
@@ -784,9 +816,10 @@
       &stag,id,ierr)
 
          implicit none
-        
-         class(perrors), intent(in), pointer :: perr
+
          class(parallel_pipe), intent(in), pointer :: pp
+         class(perrors), intent(in), pointer :: perr
+         ! class(parallel_pipe), intent(in), pointer :: pp
          class(hdf5file), intent(in) :: file
          real, dimension(:,:,:), intent(in) :: fd
          integer, dimension(3), intent(in) :: gs, ls
@@ -854,9 +887,10 @@
             call h5fopen_f(filename,H5F_ACC_RDWR_F, file_id, ierr,&
             &access_prp=flplID)
             call h5gopen_f(file_id,'/',rootID,ierr)
-            write(iter_str,'(I0.8)') file%n
+            ! write(iter_str,'(I0.8)') file%n
+            write(iter_str,'(I8)') file%n
             call h5gopen_f(rootID,'data',dataID,ierr)
-            call h5gopen_f(dataID,iter_str,iterID,ierr)
+            call h5gopen_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
             call h5gopen_f(iterID,trim(file%meshespath),meshID,ierr)
             call h5dopen_f(meshID, trim(file%dataname), dset_id, ierr, H5P_DEFAULT_F)
             if (ierr .ne. 0) then
@@ -876,7 +910,8 @@
             call wrattr_file(file,file_id,xferID)
             call h5gopen_f(file_id, '/', rootID, ierr)
             call h5gcreate_f(rootID,'data',dataID,ierr)
-            write(iter_str,'(I0.8)') file%n
+            ! write(iter_str,'(I0.8)') file%n
+            write(iter_str,'(I8)') file%n
             call h5gcreate_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
             ! here we need to write dt, time, and also
             ! time to SI connversion 
@@ -897,16 +932,12 @@
             !
             call h5dcreate_f(meshID, file%dataname, treal, dspace_id, dset_id,&
             &ierr, dcplID)
-            call wrattr_dataset(file,dset_id)
             do i=1,3 
                 local_gridspacing(i) = (file%axismax(i)-file%axismin(i))/gsize(i)
                 local_GlobalOffset(i) = 0.0
                 local_position(i) = 0.0
             end do
          
-            call add_h5_atribute(dset_id,'gridSpacing',local_gridspacing)
-            call add_h5_atribute(dset_id,'gridGlobalOffset',local_GlobalOffset)
-            call add_h5_atribute(dset_id,'position',local_position)
          endif
          
          start(1) = 0
@@ -918,7 +949,12 @@
 
          call h5dwrite_f(dset_id, treal, fd(1:lsize(1),1:lsize(2),1:lsize(3)),&
          &lsize, ierr, memspaceID, dspace_id, xfer_prp=xferID)
-
+         if (ori < 0) then
+             call wrattr_dataset(file,dset_id)
+             call add_h5_atribute(dset_id,'gridSpacing',local_gridspacing)
+             call add_h5_atribute(dset_id,'gridGlobalOffset',local_GlobalOffset)
+             call add_h5_atribute(dset_id,'position',local_position)
+         endif
 
          call h5sclose_f(memspaceID, ierr)
          call h5sclose_f(dspace_id, ierr)
@@ -948,8 +984,9 @@
 
          implicit none
         
-         class(perrors), intent(in), pointer :: perr
          class(parallel_pipe), intent(in), pointer :: pp
+         class(perrors), intent(in), pointer :: perr
+         ! class(parallel_pipe), intent(in), pointer :: pp
          class(hdf5file), intent(in) :: file
          real, dimension(:,:), intent(in) :: fd
          integer, dimension(2), intent(in) :: gs, ls
@@ -1016,9 +1053,10 @@
             call h5fopen_f(filename,H5F_ACC_RDWR_F, file_id, ierr,&
             &access_prp=flplID)
             call h5gopen_f(file_id,'/',rootID,ierr)
-            write(iter_str,'(I0.8)') file%n
+            ! write(iter_str,'(I0.8)') file%n
+            write(iter_str,'(I8)') file%n
             call h5gopen_f(rootID,'data',dataID,ierr)
-            call h5gopen_f(dataID,iter_str,iterID,ierr)
+            call h5gopen_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
             call h5gopen_f(iterID,trim(file%meshespath),meshID,ierr)
             ! call h5aopen_by_name_f(file_id, "/", "NAME", aid, ierr)
             ! lstr = len(string)
@@ -1042,8 +1080,9 @@
          if(ori < 0) then
              call h5gopen_f(file_id, '/', rootID, ierr)
              call h5gcreate_f(rootID,'data', dataID, ierr)
-             write(iter_str,'(I0.8)') file%n
-             call h5gcreate_f(dataID,trim(iter_str),iterID,ierr)
+             ! write(iter_str,'(I0.8)') file%n
+             write(iter_str,'(I8)') file%n
+             call h5gcreate_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
              if (ierr .ne. 0) then
                  write(*,*) 'pwfield_2d_pipe: error in iterID ', ori
              end if
@@ -1065,16 +1104,12 @@
          if (ori < 0) then
             call h5dcreate_f(meshID, trim(file%dataname), treal, dspace_id, dset_id,&
             &ierr, dcplID)
-            call wrattr_dataset(file,dset_id)
             do i=1,2 
                 local_gridspacing(i) = (file%axismax(i)-file%axismin(i))/gsize(i)
                 local_GlobalOffset(i) = 0.0
                 local_position(i) = 0.0
             end do
          
-            call add_h5_atribute(dset_id,'gridSpacing',local_gridspacing)
-            call add_h5_atribute(dset_id,'gridGlobalOffset',local_GlobalOffset)
-            call add_h5_atribute(dset_id,'position',local_position)
          endif
          
          start = lnoff
@@ -1084,6 +1119,13 @@
 
          call h5dwrite_f(dset_id, treal, fd(1:lsize(1),1:lsize(2)),&
          &lsize, ierr, memspaceID, dspace_id, xfer_prp=xferID)
+         
+         if (ori < 0 ) then
+            call wrattr_dataset(file,dset_id)
+            call add_h5_atribute(dset_id,'gridSpacing',local_gridspacing)
+            call add_h5_atribute(dset_id,'gridGlobalOffset',local_GlobalOffset)
+            call add_h5_atribute(dset_id,'position',local_position)
+         end if
 
          call h5sclose_f(memspaceID, ierr)
          call h5sclose_f(dspace_id, ierr)
@@ -1112,8 +1154,8 @@
 
          implicit none
         
-         class(perrors), intent(in), pointer :: perr
          class(parallel_pipe), intent(in), pointer :: pp
+         class(perrors), intent(in), pointer :: perr
          class(hdf5file), intent(in) :: file
          real, dimension(:,:), intent(in) :: fd
          integer, dimension(2), intent(in) :: gs, ls
@@ -1139,6 +1181,8 @@
          integer(hid_t) :: dataID, iterID, meshID
 ! other OPENPMD variables
          real, dimension(2) :: local_gridspacing
+         real, dimension(2) :: local_position
+         real, dimension(2) :: local_GlobalOffset
          integer i
          character(len=20) :: iter_str
                   
@@ -1170,9 +1214,10 @@
          if (ori >= 0) then
             call h5fopen_f(filename,H5F_ACC_RDWR_F, file_id, ierr)
             call h5gopen_f(file_id,'/',rootID,ierr)
-            write(iter_str,'(I0.8)') file%n
+            ! write(iter_str,'(I0.8)') file%n
+            write(iter_str,'(I8)') file%n
             call h5gopen_f(rootID,'data',dataID,ierr)
-            call h5gopen_f(dataID,iter_str,iterID,ierr)
+            call h5gopen_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
             call h5gopen_f(iterID,trim(file%meshespath),meshID,ierr)
             ! call h5aopen_by_name_f(file_id, "/", "NAME", aid, ierr)
             ! lstr = len(string)
@@ -1202,7 +1247,8 @@
          if ( ori < 0 ) then
              call h5gopen_f(file_id, '/', rootID, ierr)
              call h5gcreate_f(rootID,'data',dataID,ierr)
-             write(iter_str,'(I0.8)') file%n
+             ! write(iter_str,'(I0.8)') file%n
+             write(iter_str,'(I8)') file%n
              call h5gcreate_f(dataID,adjustl(trim(iter_str)),iterID,ierr)
          ! here we need to write dt, time, and also
          ! time to SI connversion 
@@ -1218,8 +1264,12 @@
             call wrattr_dataset(file,dset_id)
             do i=1,2 
                 local_gridspacing(i) = (file%axismax(i)-file%axismin(i))/gsize(i)
+                local_GlobalOffset(i) = 0.0
+                local_position(i) = 0.0
             end do
             call add_h5_atribute(dset_id,'gridSpacing',local_gridspacing)
+            call add_h5_atribute(dset_id,'gridGlobalOffset',local_GlobalOffset)
+            call add_h5_atribute(dset_id,'position',local_position)
          endif
          
          start(1) = 0
@@ -1230,8 +1280,6 @@
 
          call h5dwrite_f(dset_id, treal, fd(1:lsize(1),1:lsize(2)),&
          &lsize, ierr, memspaceID, dspace_id)
-
-
          call h5sclose_f(memspaceID, ierr)
          call h5sclose_f(dspace_id, ierr)
          call h5gclose_f(meshID, ierr)
@@ -1244,20 +1292,22 @@
          if (ierr .ne. 0) write(*,*)'wfield_2d_pipe: error in fclose()'
 
          if (des < pp%getnvp()) then
-            call MPI_ISEND(message,1,pp%getmint(),des,stag,pp%getlworld(),&
+            call MPI_ISEND(message,1,pp%getmint(),des,stag,&
+            &pp%getlworld(),&
             &id,ierr)
          else
             id = MPI_REQUEST_NULL         
          endif
                         
       end subroutine wfield_2d_pipe
-!
-      subroutine pwpart_2d(pp,perr,file,part,npp,dspl,delta,ierr)
+
+      subroutine pwpart_2d_orig(pp,perr,file,part,npp,dspl,delta,ierr)
      
          implicit none
 
-         class(perrors), intent(in), pointer :: perr
+         ! class(parallel_pipe), intent(in), pointer :: pp
          class(parallel_pipe), intent(in), pointer :: pp
+         class(perrors), intent(in), pointer :: perr
          class(hdf5file), intent(in) :: file
          real, dimension(:,:), intent(in) :: part
          real, dimension(2), intent(in) :: delta
@@ -1423,15 +1473,385 @@
             call h5close_f(ierr)
          endif
          
-      end subroutine pwpart_2d
+      end subroutine pwpart_2d_orig
 !
-      subroutine pwpart_3d_pipe(pp,perr,file,part,npp,dspl,delta,origin,rtag,stag,&
+
+subroutine pwpart_2d(pp,perr,file,x,p,q,npp,dspl,delta,ierr)
+
+ implicit none
+                 
+ class(parallel_pipe), intent(in), pointer :: pp
+ class(perrors), intent(in), pointer :: perr
+ class(hdf5file), intent(in) :: file
+ real, dimension(:,:), intent(in) :: x, p
+ real, dimension(:), intent(in) :: q
+ real, dimension(2), intent(in) :: delta
+ integer, intent(in) :: npp,dspl
+ integer, intent(inout) :: ierr
+! local data
+ integer :: tnpp, tp, color, pgrp, pid, pnvp, i
+ integer(hsize_t), dimension(1) :: ldim
+ integer, dimension(:), pointer :: np => null()
+ integer, dimension(:,:), pointer:: dims => null()
+ real, dimension(:), pointer :: buff => null()
+ integer(hsize_t), dimension(1) :: start
+ integer(hid_t) :: treal
+ integer(hid_t) :: flplID, xferID, memspaceID, aid
+ integer(hid_t) :: file_id, rootID, dset_id, dspace_id, aspace_id
+ integer :: info
+ character(len=:), allocatable :: filename
+ character(len=8) :: st
+
+
+ allocate(character(len(trim(file%filename))+len(trim(file%dataname))+11) :: filename)
+ write (st,'(I8.8)') file%n
+ filename = trim(file%filename)//trim(file%dataname)//'_'//st//'.h5'
+
+ ierr = 0
+ ldim(1) = 1
+ call h5open_f(ierr)
+ treal = detect_precision()
+
+ tnpp = int(npp/dspl)
+ tp = 0
+ call MPI_ALLREDUCE(tnpp,tp,1,MPI_INTEGER,MPI_SUM,pp%getlgrp(),ierr)
+
+ if (tp == 0) then
+    call h5pcreate_f(H5P_FILE_ACCESS_F, flplID, ierr)
+    call h5pcreate_f(H5P_DATASET_XFER_F, xferID, ierr)
+    info = MPI_INFO_NULL
+    call h5pset_fapl_mpio_f(flplID, pp%getlgrp(), info, ierr)
+    call h5pset_dxpl_mpio_f(xferID, H5FD_MPIO_COLLECTIVE_F, ierr)
+    call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, ierr,&
+    &access_prp=flplID)
+    call wrattr_file(file,file_id,xferID)
+    call h5gopen_f(file_id, '/', rootID, ierr)
+    call h5screate_simple_f(1, ldim, aspace_id, ierr)
+    call h5acreate_f(rootID, 'tp', H5T_NATIVE_INTEGER, aspace_id,&
+    &aid, ierr )
+    call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+    call h5aclose_f(aid, ierr)
+    call h5sclose_f(aspace_id, ierr)
+    call h5pclose_f(xferID, ierr)
+    call h5pclose_f(flplID, ierr)
+    call h5gclose_f(rootID, ierr)
+    call h5fclose_f(file_id, ierr)
+    call h5close_f(ierr)
+    return
+ else
+    if (tnpp > 0) then
+       color = 1
+    else
+       color = MPI_UNDEFINED
+    endif
+    call MPI_COMM_SPLIT(pp%getlgrp(), color, 0, pgrp, ierr )
+
+    if (tnpp > 0) then
+       call MPI_COMM_RANK(pgrp, pid, ierr)
+       call MPI_COMM_SIZE(pgrp, pnvp, ierr)
+       allocate(np(pnvp), dims(2,pnvp), stat = ierr)
+       call MPI_ALLGATHER(tnpp, 1, MPI_INTEGER, np, 1, MPI_INTEGER,&
+       &pgrp, ierr)
+       dims(1, 1) = 1
+       dims(2, 1) = np(1)
+       do i = 2, pnvp
+          dims(1,i) = dims(2,i-1) + 1
+          dims(2,i) = dims(1,i) + np(i) - 1
+       enddo
+       allocate(buff(tnpp), stat = ierr)
+
+       call h5pcreate_f(H5P_FILE_ACCESS_F, flplID, ierr)
+       call h5pcreate_f(H5P_DATASET_XFER_F, xferID, ierr)
+       info = MPI_INFO_NULL
+       call h5pset_fapl_mpio_f(flplID, pgrp, info, ierr)
+       call h5pset_dxpl_mpio_f(xferID, H5FD_MPIO_COLLECTIVE_F, ierr)
+       call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, ierr,&
+       &access_prp=flplID)
+       call wrattr_file(file,file_id,xferID)
+       call h5gopen_f(file_id, '/', rootID, ierr)
+       call h5screate_simple_f(1, ldim, aspace_id, ierr)
+       call h5acreate_f(rootID, 'tp', H5T_NATIVE_INTEGER, aspace_id,&
+       &aid, ierr )
+       call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+       call h5aclose_f(aid, ierr)
+       call h5sclose_f(aspace_id, ierr)
+
+       do i = 1, 2
+          buff(1:tnpp) = x(i,1:(1+(tnpp-1)*dspl):dspl)*delta(i)
+          ldim(1) = tp
+          call h5screate_simple_f(1, ldim, dspace_id, ierr)
+          call h5dcreate_f(rootID, 'x'//char(iachar('0')+i), treal,&
+          &dspace_id, dset_id, ierr)
+          ldim(1) = tnpp
+          call h5screate_simple_f(1, ldim, memspaceID, ierr)
+          start = dims(1,pid+1) - 1
+          call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+          &ldim, ierr)
+          call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+          &dspace_id, xfer_prp=xferID)
+          call wrattr_dataset(file,dset_id,unit='c/\omega_p',&
+          &name='x_'//char(iachar('0')+i))
+          call h5sclose_f(memspaceID, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5dclose_f(dset_id, ierr)
+       enddo
+
+       do i = 1, 3
+          buff(1:tnpp) = p(i,1:(1+(tnpp-1)*dspl):dspl)
+          ldim(1) = tp
+          call h5screate_simple_f(1, ldim, dspace_id, ierr)
+          call h5dcreate_f(rootID, 'p'//char(iachar('0')+i), treal,&
+          &dspace_id, dset_id, ierr)
+          ldim(1) = tnpp
+          call h5screate_simple_f(1, ldim, memspaceID, ierr)
+          start = dims(1,pid+1) - 1
+          call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+          &ldim, ierr)
+          call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+          &dspace_id, xfer_prp=xferID)
+          call wrattr_dataset(file,dset_id,unit='c/\omega_p',&
+          &name='p_'//char(iachar('0')+i))
+          call h5sclose_f(memspaceID, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5dclose_f(dset_id, ierr)
+       enddo
+
+       buff(1:tnpp) = q(1:(1+(tnpp-1)*dspl):dspl)
+       ldim(1) = tp
+       call h5screate_simple_f(1, ldim, dspace_id, ierr)
+       call h5dcreate_f(rootID, 'q', treal,&
+       &dspace_id, dset_id, ierr)
+       ldim(1) = tnpp
+       call h5screate_simple_f(1, ldim, memspaceID, ierr)
+       start = dims(1,pid+1) - 1
+       call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+       &ldim, ierr)
+       call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+       &dspace_id, xfer_prp=xferID)
+       call wrattr_dataset(file,dset_id,unit='a.u.',&
+       &name='q')
+       call h5sclose_f(memspaceID, ierr)
+       call h5sclose_f(dspace_id, ierr)
+       call h5dclose_f(dset_id, ierr)
+
+
+       call h5pclose_f(xferID, ierr)
+       call h5pclose_f(flplID, ierr)
+       call h5gclose_f(rootID, ierr)
+       call h5fclose_f(file_id, ierr)
+       deallocate(np,dims,buff)
+    endif
+    if (pgrp /= MPI_COMM_NULL) then
+       call MPI_COMM_FREE(pgrp, ierr)
+    endif
+    call h5close_f(ierr)
+ endif
+
+end subroutine pwpart_2d
+
+subroutine pwpart_2d_r(pp,perr,file,x,p,q,npp,dspl,ierr)
+
+ implicit none
+ class(parallel_pipe), intent(in) :: pp
+ class(perrors), intent(in) :: perr
+
+ class(hdf5file), intent(in) :: file
+ real, dimension(:,:), intent(in) :: x, p
+ real, dimension(:), intent(in) :: q
+ integer(kind=LG), intent(in) :: npp
+ integer, intent(in) :: dspl
+ integer, intent(inout) :: ierr
+! local data
+ integer :: tnpp, tp, color, pgrp, pid, pnvp, i
+ integer(hsize_t), dimension(1) :: ldim
+ integer, dimension(:), pointer :: np => null()
+ integer, dimension(:,:), pointer:: dims => null()
+ real, dimension(:), pointer :: buff => null()
+ integer(hsize_t), dimension(1) :: start
+ integer(hid_t) :: treal
+ integer(hid_t) :: flplID, xferID, memspaceID, aid
+ integer(hid_t) :: file_id, rootID, dset_id, dspace_id, aspace_id
+ integer :: info
+ character(len=:), allocatable :: filename
+ character(len=8) :: st
+
+
+ allocate(character(len(trim(file%filename))+len(trim(file%dataname))+11) :: filename)
+ write (st,'(I8.8)') file%n
+ filename = trim(file%filename)//trim(file%dataname)//'_'//st//'.h5'
+
+ ierr = 0
+ ldim(1) = 1
+ call h5open_f(ierr)
+ treal = detect_precision()
+
+ tnpp = int(npp/dspl)
+ tp = 0
+ call MPI_ALLREDUCE(tnpp,tp,1,MPI_INTEGER,MPI_SUM,pp%getlgrp(),ierr)
+
+ if (tp == 0) then
+    call h5pcreate_f(H5P_FILE_ACCESS_F, flplID, ierr)
+    call h5pcreate_f(H5P_DATASET_XFER_F, xferID, ierr)
+    info = MPI_INFO_NULL
+    call h5pset_fapl_mpio_f(flplID, pp%getlgrp(), info, ierr)
+    call h5pset_dxpl_mpio_f(xferID, H5FD_MPIO_COLLECTIVE_F, ierr)
+    call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, ierr,&
+    &access_prp=flplID)
+    call wrattr_file(file,file_id,xferID)
+    call h5gopen_f(file_id, '/', rootID, ierr)
+    call h5screate_simple_f(1, ldim, aspace_id, ierr)
+    call h5acreate_f(rootID, 'tp', H5T_NATIVE_INTEGER, aspace_id,&
+    &aid, ierr )
+    call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+    call h5aclose_f(aid, ierr)
+    call h5sclose_f(aspace_id, ierr)
+    call h5pclose_f(xferID, ierr)
+    call h5pclose_f(flplID, ierr)
+    call h5gclose_f(rootID, ierr)
+    call h5fclose_f(file_id, ierr)
+    call h5close_f(ierr)
+    return
+ else
+    if (tnpp > 0) then
+       color = 1
+    else
+       color = MPI_UNDEFINED
+    endif
+    call MPI_COMM_SPLIT(pp%getlgrp(), color, 0, pgrp, ierr )
+
+    if (tnpp > 0) then
+       call MPI_COMM_RANK(pgrp, pid, ierr)
+       call MPI_COMM_SIZE(pgrp, pnvp, ierr)
+       allocate(np(pnvp), dims(2,pnvp), stat = ierr)
+       call MPI_ALLGATHER(tnpp, 1, MPI_INTEGER, np, 1, MPI_INTEGER,&
+       &pgrp, ierr)
+       dims(1, 1) = 1
+       dims(2, 1) = np(1)
+       do i = 2, pnvp
+          dims(1,i) = dims(2,i-1) + 1
+          dims(2,i) = dims(1,i) + np(i) - 1
+       enddo
+       allocate(buff(tnpp), stat = ierr)
+
+       call h5pcreate_f(H5P_FILE_ACCESS_F, flplID, ierr)
+       call h5pcreate_f(H5P_DATASET_XFER_F, xferID, ierr)
+       info = MPI_INFO_NULL
+       call h5pset_fapl_mpio_f(flplID, pgrp, info, ierr)
+       call h5pset_dxpl_mpio_f(xferID, H5FD_MPIO_COLLECTIVE_F, ierr)
+       call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, ierr,&
+       &access_prp=flplID)
+       call wrattr_file(file,file_id,xferID)
+       call h5gopen_f(file_id, '/', rootID, ierr)
+       call h5screate_simple_f(1, ldim, aspace_id, ierr)
+       call h5acreate_f(rootID, 'tp', H5T_NATIVE_INTEGER, aspace_id,&
+       &aid, ierr )
+       call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+       call h5aclose_f(aid, ierr)
+       call h5sclose_f(aspace_id, ierr)
+
+       do i = 1, 2
+          buff(1:tnpp) = x(i,1:((tnpp-1)*dspl+1):dspl)
+
+          ! if (i == 1) then
+          !    buff(1:tnpp) = part(1,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &cos(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! else if (i == 2) then
+          !    buff(1:tnpp) = part(1,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &sin(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! end if
+          ldim(1) = tp
+          call h5screate_simple_f(1, ldim, dspace_id, ierr)
+          call h5dcreate_f(rootID, 'x'//char(iachar('0')+i), treal,&
+          &dspace_id, dset_id, ierr)
+          ldim(1) = tnpp
+          call h5screate_simple_f(1, ldim, memspaceID, ierr)
+          start = dims(1,pid+1) - 1
+          call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+          &ldim, ierr)
+          call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+          &dspace_id, xfer_prp=xferID)
+          call wrattr_dataset(file,dset_id,unit='c/\omega_p',&
+          &name='x_'//char(iachar('0')+i))
+          call h5sclose_f(memspaceID, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5dclose_f(dset_id, ierr)
+       enddo
+
+       do i = 1, 3
+          buff(1:tnpp) = p(i,1:((tnpp-1)*dspl+1):dspl)
+
+          ! if (i == 1) then
+          !    buff(1:tnpp) = part(3,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &cos(part(2,1:((tnpp-1)*dspl+1):dspl))-part(4,1:&
+          !    &((tnpp-1)*dspl+1):dspl)*&
+          !    &sin(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! else if (i == 2) then
+          !    buff(1:tnpp) = part(4,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &cos(part(2,1:((tnpp-1)*dspl+1):dspl))+part(3,1:&
+          !    &((tnpp-1)*dspl+1):dspl)*&
+          !    &sin(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! else
+          !    buff(1:tnpp) = part(5,1:(1+(tnpp-1)*dspl):dspl)
+          ! end if
+          ldim(1) = tp
+          call h5screate_simple_f(1, ldim, dspace_id, ierr)
+          call h5dcreate_f(rootID, 'p'//char(iachar('0')+i), treal,&
+          &dspace_id, dset_id, ierr)
+          ldim(1) = tnpp
+          call h5screate_simple_f(1, ldim, memspaceID, ierr)
+          start = dims(1,pid+1) - 1
+          call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+          &ldim, ierr)
+          call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+          &dspace_id, xfer_prp=xferID)
+          call wrattr_dataset(file,dset_id,unit='c/\omega_p',&
+          &name='p_'//char(iachar('0')+i))
+          call h5sclose_f(memspaceID, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5dclose_f(dset_id, ierr)
+       enddo
+
+       buff(1:tnpp) = q(1:(1+(tnpp-1)*dspl):dspl)
+       ldim(1) = tp
+       call h5screate_simple_f(1, ldim, dspace_id, ierr)
+       call h5dcreate_f(rootID, 'q', treal,&
+       &dspace_id, dset_id, ierr)
+       ldim(1) = tnpp
+       call h5screate_simple_f(1, ldim, memspaceID, ierr)
+       start = dims(1,pid+1) - 1
+       call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+       &ldim, ierr)
+       call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+       &dspace_id, xfer_prp=xferID)
+       call wrattr_dataset(file,dset_id,unit='a.u.',&
+       &name='q')
+       call h5sclose_f(memspaceID, ierr)
+       call h5sclose_f(dspace_id, ierr)
+       call h5dclose_f(dset_id, ierr)
+
+
+       call h5pclose_f(xferID, ierr)
+       call h5pclose_f(flplID, ierr)
+       call h5gclose_f(rootID, ierr)
+       call h5fclose_f(file_id, ierr)
+       deallocate(np,dims,buff)
+    endif
+    if (pgrp /= MPI_COMM_NULL) then
+       call MPI_COMM_FREE(pgrp, ierr)
+    endif
+    call h5close_f(ierr)
+ endif
+
+end subroutine pwpart_2d_r
+!
+      subroutine pwpart_3d_pipe_orig(pp,perr,file,part,npp,dspl,delta,origin,rtag,stag,&
       &id,ierr)
      
          implicit none
 
-         class(perrors), intent(in), pointer :: perr
          class(parallel_pipe), intent(in), pointer :: pp
+         class(perrors), intent(in), pointer :: perr
+
          class(hdf5file), intent(in) :: file
          real, dimension(:,:), intent(in) :: part
          real, dimension(3), intent(in) :: delta,origin
@@ -1705,15 +2125,379 @@
          
          call h5close_f(ierr)
          
-      end subroutine pwpart_3d_pipe
+      end subroutine pwpart_3d_pipe_orig
+!
+subroutine pwpart_3d_pipe(pp,perr,file,x,p,q,npp,dspl,z0,rtag,stag,id,ierr,s)
+
+ implicit none
+
+ class(parallel_pipe), intent(in), pointer :: pp
+ class(perrors), intent(in), pointer :: perr
+ class(hdf5file), intent(in) :: file
+ real, dimension(:,:), intent(in) :: x, p
+ real, dimension(:,:), intent(in), optional :: s
+ real, dimension(:), intent(in) :: q
+ real, intent(in) :: z0
+ integer(kind=LG), intent(in) :: npp
+ integer, intent(in) :: dspl
+ integer, intent(in) :: rtag, stag
+ integer, intent(inout) :: id, ierr
+! local data
+ integer :: tnpp, tp, tpo, color, pgrp, pid, pnvp, i
+ integer(hsize_t), dimension(1) :: ldim
+ integer, dimension(:), pointer :: np => null()
+ integer, dimension(:,:), pointer:: dims => null()
+ real, dimension(:), pointer :: buff => null()
+ integer(hsize_t), dimension(1) :: start,maxdim
+ integer(hid_t) :: treal
+ integer(hid_t) :: flplID, xferID, dcplID, memspaceID, aid
+ integer(hid_t) :: file_id, rootID, dset_id, dspace_id, aspace_id
+ integer :: ori, des, nvyp, mid, message, info
+ integer, dimension(10) :: istat
+ character(len=:), allocatable :: filename
+ character(len=8) :: st
+ logical :: has_spin
+
+ has_spin = .false.
+ if (present(s)) has_spin = .true.
+
+ allocate(character(len(trim(file%filename))+len(trim(file%dataname))+11) :: filename)
+ write (st,'(I8.8)') file%n
+ filename = trim(file%filename)//trim(file%dataname)//'_'//st//'.h5'
+
+ ierr = 0
+ tpo = 0
+ ldim(1) = 1
+ call h5open_f(ierr)
+ treal = detect_precision()
+ tnpp = int(npp/dspl)
+ nvyp = pp%getlnvp()
+ ori = pp%getkstrt() - nvyp
+ des = pp%getkstrt() + nvyp
+
+ if (ori >= 0) then
+    call MPI_IRECV(message,1,pp%getmint(),ori,rtag,pp%getlworld(),&
+    &mid,ierr)
+    call MPI_WAIT(mid,istat,ierr)
+ endif
+
+ call MPI_ALLREDUCE(tnpp,tp,1,MPI_INTEGER,MPI_SUM,pp%getlgrp(),ierr)
+ if (tp == 0) then
+    if (ori < 0) then
+       call h5pcreate_f(H5P_FILE_ACCESS_F, flplID, ierr)
+       call h5pcreate_f(H5P_DATASET_XFER_F, xferID, ierr)
+       info = MPI_INFO_NULL
+       call h5pset_fapl_mpio_f(flplID, pp%getlgrp(), info, ierr)
+       call h5pset_dxpl_mpio_f(xferID, H5FD_MPIO_COLLECTIVE_F, ierr)
+       call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, ierr,&
+       &access_prp=flplID)
+       call wrattr_file(file,file_id,xferID)
+       call h5gopen_f(file_id, '/', rootID, ierr)
+       call h5screate_simple_f(1, ldim, aspace_id, ierr)
+       call h5acreate_f(rootID, 'tp', H5T_NATIVE_INTEGER, aspace_id,&
+       &aid, ierr )
+       call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+       call h5aclose_f(aid, ierr)
+       call h5sclose_f(aspace_id, ierr)
+       call h5pclose_f(xferID, ierr)
+       call h5pclose_f(flplID, ierr)
+       call h5gclose_f(rootID, ierr)
+       call h5fclose_f(file_id, ierr)
+    endif
+    if (des < pp%getnvp()) then
+       call MPI_ISEND(message,1,pp%getmint(),des,stag,pp%getlworld(),&
+       &id,ierr)
+    else
+       id = MPI_REQUEST_NULL
+    endif
+    call h5close_f(ierr)
+    return
+ else
+    if (tnpp > 0) then
+       color = 1
+    else
+       color = MPI_UNDEFINED
+    endif
+    call MPI_COMM_SPLIT(pp%getlgrp(), color, 0, pgrp, ierr )
+
+    if (tnpp > 0) then
+       call MPI_COMM_RANK(pgrp, pid, ierr)
+       call MPI_COMM_SIZE(pgrp, pnvp, ierr)
+       allocate(np(pnvp), dims(2,pnvp), stat = ierr)
+       call MPI_ALLGATHER(tnpp, 1, MPI_INTEGER, np, 1, MPI_INTEGER,&
+       &pgrp, ierr)
+       dims(1, 1) = 1
+       dims(2, 1) = np(1)
+       do i = 2, pnvp
+          dims(1,i) = dims(2,i-1) + 1
+          dims(2,i) = dims(1,i) + np(i) - 1
+       enddo
+       allocate(buff(tnpp), stat = ierr)
+
+       call h5pcreate_f(H5P_FILE_ACCESS_F, flplID, ierr)
+       call h5pcreate_f(H5P_DATASET_XFER_F, xferID, ierr)
+       info = MPI_INFO_NULL
+       call h5pset_fapl_mpio_f(flplID, pgrp, info, ierr)
+       call h5pset_dxpl_mpio_f(xferID, H5FD_MPIO_COLLECTIVE_F, ierr)
+
+       if (ori < 0) then
+          call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, ierr,&
+          &access_prp=flplID)
+          call wrattr_file(file,file_id,xferID)
+          call h5gopen_f(file_id, '/', rootID, ierr)
+          call h5screate_simple_f(1, ldim, aspace_id, ierr)
+          call h5acreate_f(rootID, 'tp', H5T_NATIVE_INTEGER, aspace_id,&
+          &aid, ierr )
+          call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+          call h5aclose_f(aid, ierr)
+          call h5sclose_f(aspace_id, ierr)
+       else
+          call h5fopen_f(filename,H5F_ACC_RDWR_F, file_id, ierr,&
+          &access_prp=flplID)
+          call h5gopen_f(file_id, '/', rootID, ierr)
+          call h5aopen_f(rootID, 'tp', aid, ierr)
+          call h5aread_f(aid, H5T_NATIVE_INTEGER, tpo, ldim, ierr)
+          tp = tp + tpo
+          call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+          call h5aclose_f(aid, ierr)
+       endif
+
+       do i = 1, 3
+          ! if (i == 1) then
+          !    buff(1:tnpp) = part(1,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &cos(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! else if (i == 2) then
+          !    buff(1:tnpp) = part(1,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &sin(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! else
+          !    buff(1:tnpp) = part(i,1:((tnpp-1)*dspl+1):dspl)+z0
+          ! end if
+
+          if (i == 3) then
+            buff(1:tnpp) = x(i,1:((tnpp-1)*dspl+1):dspl)+z0
+          else
+            buff(1:tnpp) = x(i,1:((tnpp-1)*dspl+1):dspl)
+          endif
+
+          if (ori >=0 .and. tpo /= 0) then
+             call h5dopen_f(rootID, 'x'//char(iachar('0')+i), dset_id, ierr)
+             ldim(1) = tp
+             call h5dextend_f(dset_id, ldim, ierr)
+             call h5screate_simple_f(1, ldim, dspace_id, ierr)
+             ldim(1) = tnpp
+             call h5screate_simple_f(1, ldim, memspaceID, ierr )
+             start = tpo + dims(1,pid+1) - 1
+             call h5sselect_hyperslab_f(dspace_id,H5S_SELECT_SET_F,start,&
+             &ldim,ierr)
+             call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+             &dspace_id, xfer_prp=xferID)
+          else
+             maxdim = (/H5S_UNLIMITED_F/)
+             ldim(1) = 1
+             call h5screate_simple_f(1, ldim, dspace_id, ierr, maxdim)
+             call h5pcreate_f(H5P_DATASET_CREATE_F, dcplID, ierr)
+             ldim(1) = tp
+             call h5pset_chunk_f(dcplID, 1, ldim, ierr)
+             call h5dcreate_f(rootID, 'x'//char(iachar('0')+i), treal,&
+             &dspace_id, dset_id, ierr, dcplID)
+             ldim(1) = tp
+             call h5dextend_f(dset_id, ldim, ierr)
+             call h5sclose_f(dspace_id, ierr)
+             call h5screate_simple_f(1, ldim, dspace_id, ierr)
+             ldim(1) = tnpp
+             call h5screate_simple_f(1, ldim, memspaceID, ierr )
+             start = tpo + dims(1,pid+1) - 1
+             call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+             &ldim, ierr)
+             call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+             &dspace_id, xfer_prp=xferID)
+             call wrattr_dataset(file,dset_id,unit='c/\omega_p',&
+             &name='x_'//char(iachar('0')+i))
+             call h5pclose_f(dcplID, ierr)
+          endif
+          call h5sclose_f(memspaceID, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5dclose_f(dset_id, ierr)
+       enddo
+
+       do i = 1, 3
+          ! if (i == 1) then
+          !    buff(1:tnpp) = part(4,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &cos(part(2,1:((tnpp-1)*dspl+1):dspl)) - &
+          !    &part(5,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &sin(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! else if (i == 2) then
+          !    buff(1:tnpp) = part(4,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &sin(part(2,1:((tnpp-1)*dspl+1):dspl)) + &
+          !    &part(5,1:((tnpp-1)*dspl+1):dspl)*&
+          !    &cos(part(2,1:((tnpp-1)*dspl+1):dspl))
+          ! else
+          !    buff(1:tnpp) = part(6,1:((tnpp-1)*dspl+1):dspl)
+          ! end if
+
+          buff(1:tnpp) = p(i,1:((tnpp-1)*dspl+1):dspl)
+
+          if (ori >= 0 .and. tpo /= 0) then
+             call h5dopen_f(rootID, 'p'//char(iachar('0')+i), dset_id, ierr)
+             ldim(1) = tp
+             call h5dextend_f(dset_id, ldim, ierr)
+             call h5screate_simple_f(1, ldim, dspace_id, ierr)
+             ldim(1) = tnpp
+             call h5screate_simple_f(1, ldim, memspaceID, ierr )
+             start = tpo + dims(1,pid+1) - 1
+             call h5sselect_hyperslab_f(dspace_id,H5S_SELECT_SET_F,start,&
+             &ldim,ierr)
+             call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+             &dspace_id, xfer_prp=xferID)
+          else
+             maxdim = (/H5S_UNLIMITED_F/)
+             ldim(1) = 1
+             call h5screate_simple_f(1, ldim, dspace_id, ierr, maxdim)
+             call h5pcreate_f(H5P_DATASET_CREATE_F, dcplID, ierr)
+             ldim(1) = tp
+             call h5pset_chunk_f(dcplID, 1, ldim, ierr)
+             call h5dcreate_f(rootID, 'p'//char(iachar('0')+i), treal,&
+             &dspace_id, dset_id, ierr, dcplID)
+             ldim(1) = tp
+             call h5dextend_f(dset_id, ldim, ierr)
+             call h5sclose_f(dspace_id, ierr)
+             call h5screate_simple_f(1, ldim, dspace_id, ierr)
+             ldim(1) = tnpp
+             call h5screate_simple_f(1, ldim, memspaceID, ierr )
+             start = tpo + dims(1,pid+1) - 1
+             call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+             &ldim, ierr)
+             call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+             &dspace_id, xfer_prp=xferID)
+             call wrattr_dataset(file,dset_id,unit='m_ec',&
+             &name='p_'//char(iachar('0')+i))
+             call h5pclose_f(dcplID, ierr)
+          endif
+          call h5sclose_f(memspaceID, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5dclose_f(dset_id, ierr)
+       enddo
+
+       if (has_spin) then
+
+       do i = 1, 3
+
+          buff(1:tnpp) = s(i,1:((tnpp-1)*dspl+1):dspl)
+
+          if (ori >= 0 .and. tpo /= 0) then
+             call h5dopen_f(rootID, 's'//char(iachar('0')+i), dset_id, ierr)
+             ldim(1) = tp
+             call h5dextend_f(dset_id, ldim, ierr)
+             call h5screate_simple_f(1, ldim, dspace_id, ierr)
+             ldim(1) = tnpp
+             call h5screate_simple_f(1, ldim, memspaceID, ierr )
+             start = tpo + dims(1,pid+1) - 1
+             call h5sselect_hyperslab_f(dspace_id,H5S_SELECT_SET_F,start,&
+             &ldim,ierr)
+             call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+             &dspace_id, xfer_prp=xferID)
+          else
+             maxdim = (/H5S_UNLIMITED_F/)
+             ldim(1) = 1
+             call h5screate_simple_f(1, ldim, dspace_id, ierr, maxdim)
+             call h5pcreate_f(H5P_DATASET_CREATE_F, dcplID, ierr)
+             ldim(1) = tp
+             call h5pset_chunk_f(dcplID, 1, ldim, ierr)
+             call h5dcreate_f(rootID, 's'//char(iachar('0')+i), treal,&
+             &dspace_id, dset_id, ierr, dcplID)
+             ldim(1) = tp
+             call h5dextend_f(dset_id, ldim, ierr)
+             call h5sclose_f(dspace_id, ierr)
+             call h5screate_simple_f(1, ldim, dspace_id, ierr)
+             ldim(1) = tnpp
+             call h5screate_simple_f(1, ldim, memspaceID, ierr )
+             start = tpo + dims(1,pid+1) - 1
+             call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+             &ldim, ierr)
+             call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+             &dspace_id, xfer_prp=xferID)
+             call wrattr_dataset(file,dset_id,unit='a.u.',&
+             &name='s_'//char(iachar('0')+i))
+             call h5pclose_f(dcplID, ierr)
+          endif
+          call h5sclose_f(memspaceID, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5dclose_f(dset_id, ierr)
+       enddo
+
+       endif
+
+       buff(1:tnpp) = q(1:((tnpp-1)*dspl+1):dspl)
+       if (ori >= 0 .and. tpo /= 0) then
+          call h5dopen_f(rootID, 'q', dset_id, ierr)
+          ldim(1) = tp
+          call h5dextend_f(dset_id, ldim, ierr)
+          call h5screate_simple_f(1, ldim, dspace_id, ierr)
+          ldim(1) = tnpp
+          call h5screate_simple_f(1, ldim, memspaceID, ierr )
+          start = tpo + dims(1,pid+1) - 1
+          call h5sselect_hyperslab_f(dspace_id,H5S_SELECT_SET_F,start,&
+          &ldim,ierr)
+          call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+          &dspace_id, xfer_prp=xferID)
+       else
+          maxdim = (/H5S_UNLIMITED_F/)
+          ldim(1) = 1
+          call h5screate_simple_f(1, ldim, dspace_id, ierr, maxdim)
+          call h5pcreate_f(H5P_DATASET_CREATE_F, dcplID, ierr)
+          ldim(1) = tp
+          call h5pset_chunk_f(dcplID, 1, ldim, ierr)
+          call h5dcreate_f(rootID, 'q', treal,&
+          &dspace_id, dset_id, ierr, dcplID)
+          ldim(1) = tp
+          call h5dextend_f(dset_id, ldim, ierr)
+          call h5sclose_f(dspace_id, ierr)
+          call h5screate_simple_f(1, ldim, dspace_id, ierr)
+          ldim(1) = tnpp
+          call h5screate_simple_f(1, ldim, memspaceID, ierr )
+          start = tpo + dims(1,pid+1) - 1
+          call h5sselect_hyperslab_f(dspace_id, H5S_SELECT_SET_F,start,&
+          &ldim, ierr)
+          call h5dwrite_f(dset_id, treal, buff, ldim, ierr, memspaceID,&
+          &dspace_id, xfer_prp=xferID)
+          call wrattr_dataset(file,dset_id,unit='a.u.',&
+          &name='q')
+          call h5pclose_f(dcplID, ierr)
+       endif
+       call h5sclose_f(memspaceID, ierr)
+       call h5sclose_f(dspace_id, ierr)
+       call h5dclose_f(dset_id, ierr)
+
+
+       call h5pclose_f(xferID, ierr)
+       call h5pclose_f(flplID, ierr)
+       call h5gclose_f(rootID, ierr)
+       call h5fclose_f(file_id, ierr)
+       deallocate(np,dims,buff)
+    endif
+ endif
+
+ if (des < pp%getnvp()) then
+    call MPI_ISEND(message,1,pp%getmint(),des,stag,pp%getlworld(),&
+    &id,ierr)
+ else
+    id = MPI_REQUEST_NULL
+ endif
+
+ if (pgrp /= MPI_COMM_NULL) then
+    call MPI_COMM_FREE(pgrp, ierr )
+ endif
+
+ call h5close_f(ierr)
+
+end subroutine pwpart_3d_pipe
 !
 !
-      subroutine wpart(pp,perr,file,part,npp,dspl,ierr)
+      subroutine wpart_orig(file,part,npp,dspl,ierr)
      
          implicit none
 
-         class(perrors), intent(in), pointer :: perr
-         class(parallel_pipe), intent(in), pointer :: pp
+         ! class(parallel_pipe), intent(in), pointer :: pp
          class(hdf5file), intent(in) :: file
          real, dimension(:,:), intent(in) :: part
          integer, intent(in) :: npp,dspl
@@ -1770,14 +2554,13 @@
             call h5close_f(ierr)
          end if
          
-      end subroutine wpart
+      end subroutine wpart_orig
 !
-      subroutine rpart(pp,perr,file,part,npp,ierr)
+      subroutine rpart_orig(file,part,npp,ierr)
      
          implicit none
 
-         class(perrors), intent(in), pointer :: perr
-         class(parallel_pipe), intent(in), pointer :: pp
+         ! class(parallel_pipe), intent(in), pointer :: pp
          class(hdf5file), intent(in) :: file
          real, dimension(:,:), intent(inout) :: part
          integer, intent(out) :: npp
@@ -1828,7 +2611,248 @@
             call h5close_f(ierr)
          end if
          
-      end subroutine rpart
+      end subroutine rpart_orig
+
+subroutine wpart(file,x,p,q,npp,dspl,ierr,s)
+
+ implicit none
+
+ class(hdf5file), intent(in) :: file
+ real, dimension(:,:), intent(in) :: x, p
+ real, dimension(:,:), intent(in), optional :: s
+ real, dimension(:), intent(in) :: q
+ integer(kind=LG), intent(in) :: npp
+ integer, intent(in) :: dspl
+ integer, intent(inout) :: ierr
+! local data
+ integer :: tp
+ integer(hsize_t), dimension(1) :: ldim
+ integer(hsize_t), dimension(2) :: dim
+ integer(hid_t) :: treal
+ integer(hid_t) :: file_id, rootID, dset_id, dspace_id, aspace_id
+ integer(hid_t) :: memspaceID, aid
+ character(len=:), allocatable :: filename
+ character(len=8) :: st
+ logical :: has_spin
+
+ has_spin = .false.
+ if (present(s)) has_spin = .true.
+
+ allocate(character(len(trim(file%filename))+len(trim(file%dataname))+11) :: filename)
+ write (st,'(I8.8)') file%n
+ filename = trim(file%filename)//trim(file%dataname)//'_'//st//'.h5'
+
+ ierr = 0
+ ldim(1) = 1
+ call h5open_f(ierr)
+ treal = detect_precision()
+ tp = int(npp/dspl)
+ call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, ierr)
+ call wrattr_file(file,file_id,H5P_DEFAULT_F)
+ call h5gopen_f(file_id, '/', rootID, ierr)
+ call h5screate_simple_f(1, ldim, aspace_id, ierr)
+ call h5acreate_f(rootID, 'tp', H5T_NATIVE_INTEGER, aspace_id,&
+ &aid, ierr )
+ call h5awrite_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+ call h5aclose_f(aid, ierr)
+ call h5sclose_f(aspace_id, ierr)
+
+ if (tp == 0) then
+    call h5gclose_f(rootID, ierr)
+    call h5fclose_f(file_id, ierr)
+    call h5close_f(ierr)
+ else
+    ! dim(1) = size(part,1)
+    ! dim(2) = tp
+    ! call h5screate_simple_f(2, dim, dspace_id, ierr)
+    ! call h5screate_simple_f(2, dim, memspaceID, ierr)
+    ! call h5dcreate_f(rootID, file%dataname, treal, dspace_id, dset_id,&
+    ! &ierr)
+    ! call wrattr_dataset(file,dset_id)
+    ! call h5dwrite_f(dset_id, treal, part(:,1:(1+(tp-1)*dspl):dspl),&
+    ! &dim, ierr, memspaceID, dspace_id)
+    ! call h5sclose_f(memspaceID, ierr)
+    ! call h5sclose_f(dspace_id, ierr)
+    ! call h5gclose_f(rootID, ierr)
+    ! call h5dclose_f(dset_id, ierr)
+    ! call h5fclose_f(file_id, ierr)
+    ! call h5close_f(ierr)
+
+    ! write position
+    dim(1) = size(x,1)
+    dim(2) = tp
+    call h5screate_simple_f(2, dim, dspace_id, ierr)
+    call h5screate_simple_f(2, dim, memspaceID, ierr)
+    call h5dcreate_f(rootID, 'x', treal, dspace_id, dset_id,&
+    &ierr)
+    call wrattr_dataset(file,dset_id)
+    call h5dwrite_f(dset_id, treal, x(:,1:(1+(tp-1)*dspl):dspl),&
+    &dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    ! write momentum
+    dim(1) = size(p,1)
+    call h5screate_simple_f(2, dim, dspace_id, ierr)
+    call h5screate_simple_f(2, dim, memspaceID, ierr)
+    call h5dcreate_f(rootID, 'p', treal, dspace_id, dset_id,&
+    &ierr)
+    call wrattr_dataset(file,dset_id)
+    call h5dwrite_f(dset_id, treal, p(:,1:(1+(tp-1)*dspl):dspl),&
+    &dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    ! write spin
+    if (has_spin) then
+
+    dim(1) = size(s,1)
+    call h5screate_simple_f(2, dim, dspace_id, ierr)
+    call h5screate_simple_f(2, dim, memspaceID, ierr)
+    call h5dcreate_f(rootID, 's', treal, dspace_id, dset_id,&
+    &ierr)
+    call wrattr_dataset(file,dset_id)
+    call h5dwrite_f(dset_id, treal, s(:,1:(1+(tp-1)*dspl):dspl),&
+    &dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    endif
+
+    ! write charge
+    call h5screate_simple_f(1, dim(2), dspace_id, ierr)
+    call h5screate_simple_f(1, dim(2), memspaceID, ierr)
+    call h5dcreate_f(rootID, 'q', treal, dspace_id, dset_id,&
+    &ierr)
+    call wrattr_dataset(file,dset_id)
+    call h5dwrite_f(dset_id, treal, q(1:(1+(tp-1)*dspl):dspl),&
+    &dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    call h5gclose_f(rootID, ierr)
+    call h5fclose_f(file_id, ierr)
+    call h5close_f(ierr)
+ end if
+
+end subroutine wpart
+!
+subroutine rpart(pp,perr,file,x,p,q,npp,ierr,s)
+
+ implicit none
+
+ class(parallel_pipe), intent(in), pointer :: pp
+ class(perrors), intent(in), pointer :: perr
+ class(hdf5file), intent(in) :: file
+ real, dimension(:,:), intent(inout) :: x, p
+ real, dimension(:,:), intent(inout), optional :: s
+ real, dimension(:), intent(inout) :: q
+ integer(kind=LG), intent(out) :: npp
+ integer, intent(inout) :: ierr
+! local data
+ integer :: tp
+ integer(hsize_t), dimension(1) :: ldim
+ integer(hsize_t), dimension(2) :: dim
+ integer(hid_t) :: treal
+ integer(hid_t) :: file_id, rootID, dset_id, dspace_id
+ integer(hid_t) :: memspaceID, aid
+ character(len=:), allocatable :: filename
+ character(len=8) :: st
+ logical :: has_spin
+
+ has_spin = .false.
+ if (present(s)) has_spin = .true.
+
+ allocate(character(len(trim(file%filename))+len(trim(file%dataname))+11) :: filename)
+ write (st,'(I8.8)') file%n
+ filename = trim(file%filename)//trim(file%dataname)//'_'//st//'.h5'
+
+ ierr = 0
+ ldim(1) = 1
+ call h5open_f(ierr)
+ treal = detect_precision()
+ call h5fopen_f(filename,H5F_ACC_RDONLY_F, file_id, ierr)
+ call h5gopen_f(file_id, '/', rootID, ierr)
+ call h5aopen_f(rootID, 'tp', aid, ierr)
+ call h5aread_f(aid, H5T_NATIVE_INTEGER, tp, ldim, ierr)
+ call h5aclose_f(aid, ierr)
+ npp = tp
+
+ if (tp == 0) then
+    call h5gclose_f(rootID, ierr)
+    call h5fclose_f(file_id, ierr)
+    call h5close_f(ierr)
+ else
+    ! dim(1) = size(part,1)
+    ! dim(2) = tp
+    ! call h5screate_simple_f(2, dim, dspace_id, ierr)
+    ! call h5screate_simple_f(2, dim, memspaceID, ierr)
+    ! call h5dopen_f(rootID, file%dataname, dset_id, ierr)
+    ! call h5dread_f(dset_id, treal, part,&
+    ! &dim, ierr, memspaceID, dspace_id)
+    ! call h5sclose_f(memspaceID, ierr)
+    ! call h5sclose_f(dspace_id, ierr)
+    ! call h5gclose_f(rootID, ierr)
+    ! call h5dclose_f(dset_id, ierr)
+    ! call h5fclose_f(file_id, ierr)
+    ! call h5close_f(ierr)
+
+    ! read position
+    dim(1) = size(x,1)
+    dim(2) = tp
+    call h5screate_simple_f(2, dim, dspace_id, ierr)
+    call h5screate_simple_f(2, dim, memspaceID, ierr)
+    call h5dopen_f(rootID, 'x', dset_id, ierr)
+    call h5dread_f(dset_id, treal, x, dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    ! read momentum
+    dim(1) = size(p,1)
+    call h5screate_simple_f(2, dim, dspace_id, ierr)
+    call h5screate_simple_f(2, dim, memspaceID, ierr)
+    call h5dopen_f(rootID, 'p', dset_id, ierr)
+    call h5dread_f(dset_id, treal, p, dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    ! read spin
+    if (has_spin) then
+
+    dim(1) = size(s,1)
+    call h5screate_simple_f(2, dim, dspace_id, ierr)
+    call h5screate_simple_f(2, dim, memspaceID, ierr)
+    call h5dopen_f(rootID, 's', dset_id, ierr)
+    call h5dread_f(dset_id, treal, s, dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    endif
+
+    ! read charge
+    call h5screate_simple_f(1, dim(2), dspace_id, ierr)
+    call h5screate_simple_f(1, dim(2), memspaceID, ierr)
+    call h5dopen_f(rootID, 'q', dset_id, ierr)
+    call h5dread_f(dset_id, treal, q, dim, ierr, memspaceID, dspace_id)
+    call h5sclose_f(memspaceID, ierr)
+    call h5sclose_f(dspace_id, ierr)
+    call h5dclose_f(dset_id, ierr)
+
+    call h5gclose_f(rootID, ierr)
+    call h5fclose_f(file_id, ierr)
+    call h5close_f(ierr)
+ end if
+
+end subroutine rpart
+!
+
 !
       function detect_precision()
          integer(hid_t) :: detect_precision
