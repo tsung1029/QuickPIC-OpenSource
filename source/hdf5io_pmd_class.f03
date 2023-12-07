@@ -854,6 +854,7 @@
          allocate(character(len(trim(file%filename))+len(trim(file%dataname))+11) :: filename)
          write (st,'(I8.8)') file%n
          filename = trim(file%filename)//trim(file%dataname)//'_'//st//'.h5'
+         write(*,*) 'in pwfield_3D_pipe',filename
          
          ierr = 0
          gsize = gs
@@ -1018,9 +1019,11 @@
          character(len=20) :: iter_str
          logical gexist
                   
+         write(*,*) 'in pwfield_2d_pipe'
          allocate(character(len(trim(file%filename))+len(trim(file%dataname))+11) :: filename)
          write (st,'(I8.8)') file%n
          filename = trim(file%filename)//trim(file%dataname)//'_'//st//'.h5'
+         write(*,*) 'in pwfield_2d_pipe',filename
          
          ierr = 0
          gsize = gs
